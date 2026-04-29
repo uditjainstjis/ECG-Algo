@@ -506,11 +506,19 @@ elif mode == "📡 Live Arduino Feed":
     st.markdown("</div>", unsafe_allow_html=True)
 
     buffer_file = "/tmp/ecg_buffer.npy"
+    
+    from streamlit_autorefresh import st_autorefresh
+    st_autorefresh(interval=500, key="lr")
+    
     if os.path.exists(buffer_file):
-        # We have data! Let's autorefresh and read it.
-        from streamlit_autorefresh import st_autorefresh
-        st_autorefresh(interval=500, key="lr")
+        import time
+        file_age = time.time() - os.path.getmtime(buffer_file)
         
+        if file_age > 2.5:
+            st.error("🔌 **Offline:** Please connect the EXG Arduino device.")
+            st.caption(f"Waiting for hardware... (Last data seen {int(file_age)}s ago)")
+            st.stop()
+            
         try:
             buf = np.load(buffer_file)
             fs = 250
