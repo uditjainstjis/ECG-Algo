@@ -26,6 +26,7 @@ streamlit>=1.30
 streamlit-autorefresh>=1.0
 peft
 transformers
+torchvision
 
 # Utilities
 tqdm>=4.65
