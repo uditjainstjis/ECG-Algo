@@ -386,6 +386,7 @@ def render_results(signal, fs, results, view_seconds):
         episodes, {"analyzable_pct": 100 if sqi > .4 else 50, "mean_sqi": sqi}, mets, {})
     with st.expander("View Full Report", expanded=False):
         st.markdown(report)
+    st.download_button("📥 Download Report", report, file_name="HeartEngine_Clinical_Report.md", mime="text/markdown")
 
 
 # ============================================================
@@ -498,39 +499,111 @@ elif mode == "📂 PhysioNet Record":
 # MODE: LIVE ARDUINO
 # ============================================================
 elif mode == "📡 Live Arduino Feed":
-    st.markdown("<div class='gc' style='text-align:center'>", unsafe_allow_html=True)
-    st.markdown("#### 📡 Live Arduino Telemetry")
-    st.markdown("To ensure stable, crash-free data streaming, we use a terminal proxy for the Arduino.")
-    st.markdown("Run this in a **new terminal window**:")
-    st.code("python heartengine/viz/arduino_proxy.py", language="bash")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    buffer_file = "/tmp/ecg_buffer.npy"
-    
     from streamlit_autorefresh import st_autorefresh
     st_autorefresh(interval=500, key="lr")
-    
+
+    buffer_file = "/tmp/ecg_buffer.npy"
+    import time as _time
+
+    # Check if proxy buffer exists and is fresh
+    proxy_alive = False
+    buf = None
     if os.path.exists(buffer_file):
-        import time
-        file_age = time.time() - os.path.getmtime(buffer_file)
-        
-        if file_age > 2.5:
-            st.error("🔌 **Offline:** Please connect the EXG Arduino device.")
-            st.caption(f"Waiting for hardware... (Last data seen {int(file_age)}s ago)")
-            st.stop()
-            
-        try:
-            buf = np.load(buffer_file)
-            fs = 250
-            if len(buf) < fs * 3:
-                st.warning(f"⏳ Buffering ECG signal... ({len(buf)} samples, need {fs*3} for analysis)")
-                st.progress(min(len(buf) / (fs * 3), 1.0))
-            else:
-                st.markdown("<div style='text-align:right;'><span class='live-dot'></span> <span style='color:#22c55e;font-weight:600'>Receiving Serial Data</span></div>", unsafe_allow_html=True)
-                sig = buf[-fs * 15:] if len(buf) > fs * 15 else buf
-                results = run_analysis(np.array(sig), fs)
-                render_results(np.array(sig), fs, results, view_sec)
-        except Exception as e:
-            st.error(f"Error reading proxy buffer: {e}")
+        file_age = _time.time() - os.path.getmtime(buffer_file)
+        if file_age < 3.0:
+            try:
+                buf = np.load(buffer_file)
+                if len(buf) > 0:
+                    proxy_alive = True
+            except Exception:
+                pass
+
+    if not proxy_alive or buf is None or len(buf) == 0:
+        # ---- OFFLINE STATE ----
+        st.markdown("""<div class='gc' style='text-align:center;padding:40px'>
+            <p style='font-size:3.5rem;margin:0'>🔌</p>
+            <h3 style='color:#ef4444;margin:8px 0'>EXG Device Offline</h3>
+            <p style='color:#94a3b8'>Connect your Arduino EXG sensor and start the proxy</p>
+        </div>""", unsafe_allow_html=True)
+
+        st.markdown("#### Quick Start")
+        st.markdown("**Step 1:** Plug your Arduino EXG device into USB")
+        st.markdown("**Step 2:** Open a terminal and run:")
+        st.code("python heartengine/viz/arduino_proxy.py", language="bash")
+        st.markdown("**Step 3:** This page will automatically detect the signal ✨")
+
+        if os.path.exists(buffer_file):
+            age = _time.time() - os.path.getmtime(buffer_file)
+            st.caption(f"Last data seen {int(age)}s ago")
+        else:
+            st.caption("No proxy buffer detected yet")
+
     else:
-        st.info("Waiting for `arduino_proxy.py` to start and write data...")
+        # ---- LIVE STATE ----
+        fs = 250
+
+        if len(buf) < fs * 3:
+            st.markdown("<div style='text-align:right'><span class='live-dot'></span> <span style='color:#22c55e;font-weight:600'>CONNECTED</span></div>", unsafe_allow_html=True)
+            st.warning(f"⏳ Buffering... {len(buf)}/{fs*3} samples")
+            st.progress(min(len(buf) / (fs * 3), 1.0))
+        else:
+            # ---- Waveform display ----
+            st.markdown("<div style='text-align:right'><span class='live-dot'></span> <span style='color:#22c55e;font-weight:600'>LIVE — Receiving ECG Telemetry</span></div>", unsafe_allow_html=True)
+
+            display_samples = min(len(buf), fs * view_sec)
+            sig_display = buf[-display_samples:]
+            t = np.arange(len(sig_display)) / fs
+
+            import plotly.graph_objects as go
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=t, y=sig_display,
+                mode="lines",
+                line=dict(color="#22c55e", width=1.5),
+                name="ECG",
+                hovertemplate="Time: %{x:.2f}s<br>Amplitude: %{y:.3f}mV<extra></extra>"
+            ))
+            fig.update_layout(
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#94a3b8", family="Inter"),
+                margin=dict(l=10, r=10, t=40, b=10),
+                showlegend=False, hovermode="x unified",
+                height=320,
+                title=dict(text="♥ Live ECG Waveform", font=dict(size=16, color="#22c55e")),
+                xaxis_title="Time (seconds)",
+                yaxis_title="Amplitude (mV)",
+                xaxis=dict(showgrid=True, gridcolor="rgba(34,197,94,.08)", range=[t[0], t[-1]]),
+                yaxis=dict(showgrid=True, gridcolor="rgba(34,197,94,.08)"),
+            )
+            st.plotly_chart(fig, use_container_width=True, key="live_ecg_chart")
+
+            # ---- Quick stats bar ----
+            sig_analysis = buf[-fs * 15:] if len(buf) > fs * 15 else buf
+            sig_arr = np.array(sig_analysis, dtype=np.float64)
+
+            # Simple R-peak estimation for live BPM
+            from heartengine.data.preprocessing import preprocess_ecg
+            cleaned = preprocess_ecg(sig_arr, fs)
+            pt = AdaptivePanTompkins()
+            detection = pt.detect(cleaned, fs)
+            rpeaks = detection.rpeaks if hasattr(detection, 'rpeaks') else np.array([])
+
+            if len(rpeaks) > 1:
+                rr = np.diff(rpeaks) / fs
+                rr = rr[(rr > 0.3) & (rr < 2.0)]
+                bpm = 60.0 / np.mean(rr) if len(rr) > 0 else 0
+            else:
+                bpm = 0
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("❤️ Heart Rate", f"{int(bpm)} BPM" if bpm > 0 else "—")
+            m2.metric("📊 Buffer", f"{len(buf):,} samples")
+            m3.metric("⏱️ Duration", f"{len(buf)/fs:.1f}s")
+            m4.metric("🔬 R-Peaks", f"{len(rpeaks)}")
+
+            # ---- Run full analysis on accumulated signal ----
+            st.markdown("---")
+            st.markdown("### 🔬 Live Analysis Results")
+            results = run_analysis(sig_arr, fs)
+            render_results(sig_arr, fs, results, view_sec)
+
