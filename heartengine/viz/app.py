@@ -607,12 +607,24 @@ elif mode == "📡 Live Arduino Feed":
             if bpm < 40 or bpm > 180:
                 bpm = 0
 
-            # Exponential smoothing across refreshes
-            if "smooth_bpm" not in st.session_state:
-                st.session_state.smooth_bpm = bpm
+            # Rolling BPM history for ultra-stable display
+            if "bpm_history" not in st.session_state:
+                st.session_state.bpm_history = []
+                st.session_state.smooth_bpm = 0
+
             if bpm > 0:
-                alpha = 0.3  # Lower = smoother
-                st.session_state.smooth_bpm = alpha * bpm + (1 - alpha) * st.session_state.smooth_bpm
+                # Reject spikes: if last stable reading exists, reject jumps > 40 BPM
+                last = st.session_state.smooth_bpm
+                if last > 0 and abs(bpm - last) > 40:
+                    pass  # Skip this noisy reading entirely
+                else:
+                    st.session_state.bpm_history.append(bpm)
+                    # Keep last 10 readings
+                    st.session_state.bpm_history = st.session_state.bpm_history[-10:]
+
+            if len(st.session_state.bpm_history) >= 2:
+                st.session_state.smooth_bpm = float(np.median(st.session_state.bpm_history))
+
             display_bpm = int(st.session_state.smooth_bpm) if st.session_state.smooth_bpm > 40 else 0
 
             m1, m2, m3, m4 = st.columns(4)
