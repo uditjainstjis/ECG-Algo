@@ -578,25 +578,45 @@ elif mode == "📡 Live Arduino Feed":
             st.plotly_chart(fig, use_container_width=True, key="live_ecg_chart")
 
             # ---- Quick stats bar ----
-            sig_analysis = buf[-fs * 15:] if len(buf) > fs * 15 else buf
+            sig_analysis = buf[-fs * 10:] if len(buf) > fs * 10 else buf
             sig_arr = np.array(sig_analysis, dtype=np.float64)
 
-            # Simple R-peak estimation for live BPM
+            # Robust R-peak BPM: bandpass → detect → median RR → clamp → smooth
             from heartengine.data.preprocessing import preprocess_ecg
+            from scipy.signal import butter, filtfilt
             cleaned = preprocess_ecg(sig_arr, fs)
+            # Extra bandpass (5-25Hz) to kill baseline wander and high-freq noise
+            try:
+                b, a = butter(3, [5, 25], btype='band', fs=fs)
+                cleaned = filtfilt(b, a, cleaned)
+            except Exception:
+                pass
             pt = AdaptivePanTompkins()
             detection = pt.detect(cleaned, fs)
             rpeaks = detection.rpeaks if hasattr(detection, 'rpeaks') else np.array([])
 
-            if len(rpeaks) > 1:
+            bpm = 0
+            if len(rpeaks) > 2:
                 rr = np.diff(rpeaks) / fs
-                rr = rr[(rr > 0.3) & (rr < 2.0)]
-                bpm = 60.0 / np.mean(rr) if len(rr) > 0 else 0
-            else:
+                # Only keep physiologically plausible intervals (40-180 BPM → 0.33-1.5s)
+                rr = rr[(rr > 0.33) & (rr < 1.5)]
+                if len(rr) > 1:
+                    bpm = 60.0 / np.median(rr)  # Median is far more robust than mean
+
+            # Clamp to human range
+            if bpm < 40 or bpm > 180:
                 bpm = 0
 
+            # Exponential smoothing across refreshes
+            if "smooth_bpm" not in st.session_state:
+                st.session_state.smooth_bpm = bpm
+            if bpm > 0:
+                alpha = 0.3  # Lower = smoother
+                st.session_state.smooth_bpm = alpha * bpm + (1 - alpha) * st.session_state.smooth_bpm
+            display_bpm = int(st.session_state.smooth_bpm) if st.session_state.smooth_bpm > 40 else 0
+
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("❤️ Heart Rate", f"{int(bpm)} BPM" if bpm > 0 else "—")
+            m1.metric("❤️ Heart Rate", f"{display_bpm} BPM" if display_bpm > 0 else "—")
             m2.metric("📊 Buffer", f"{len(buf):,} samples")
             m3.metric("⏱️ Duration", f"{len(buf)/fs:.1f}s")
             m4.metric("🔬 R-Peaks", f"{len(rpeaks)}")
