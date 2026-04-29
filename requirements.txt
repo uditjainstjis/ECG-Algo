@@ -23,6 +23,9 @@ huggingface-hub>=0.20
 matplotlib>=3.7
 plotly>=5.18
 streamlit>=1.30
+streamlit-autorefresh>=1.0
+peft
+transformers
 
 # Utilities
 tqdm>=4.65
