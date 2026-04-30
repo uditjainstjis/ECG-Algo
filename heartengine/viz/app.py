@@ -65,6 +65,11 @@ METHODS = {
 @st.cache_resource(show_spinner="Loading AI Models (first run only)...")
 def load_wav2vec2_model():
     """Cache the heavy Wav2Vec2 + LoRA model to fix slow UI loading."""
+    import os
+    # --- CLOUD OOM PROTECTION ---
+    if "/mount/src" in os.getcwd().replace("\\", "/").lower() or "STREAMLIT_SHARING_MODE" in os.environ:
+        return "CLOUD_MODE_MOCK"
+        
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "rtc_work"))
     adapter_dir = os.path.join(os.path.dirname(__file__), "..", "..", "models", "lora_ecg_adapter")
@@ -235,7 +240,13 @@ def run_analysis(signal, fs):
                     
                     # Use the cached model
                     model = load_wav2vec2_model()
-                    if model is not None:
+                    if model == "CLOUD_MODE_MOCK":
+                        method_results[m] = {
+                            "status": "☁️ Cloud Mode", 
+                            "af_detected": False,
+                            "detail": "Disabled to prevent 1GB RAM crash on cloud. Run locally on Mac to enable."
+                        }
+                    elif model is not None:
                         input_tensor = torch.tensor(sig_16k).unsqueeze(0)
                         with torch.no_grad():
                             logits = model(input_tensor)
